@@ -1,0 +1,157 @@
+---
+title: "Fantasy Football Analyser"
+author: "Alex Dolphin"
+#date: "Add date here"
+output:
+    html_document:
+        toc: true
+        toc_depth: 2
+        number_sections: false
+        code_folding: hide # This allows code to be shown or hidden
+runtime: shiny # This means the markdown file can be run as a Shiny App, i.e. by a Shiny Server
+---
+
+```{r setup, include=FALSE}
+# Import your librares as required
+library(data.table)
+library(ggplot2)
+library(magrittr)
+library(plotly)
+library(RMySQL)
+library(shiny)
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
+```
+
+```{r query_db_function}
+# MySQL Settings
+db_user <- "root"
+db_name <- "fantasy_football_2019"
+db_host <- "127.0.0.1"
+db_port <- 3306
+query_db <- function(query_string){
+    con <- dbConnect(
+        MySQL(),
+        user = db_user,
+        dbname = db_name,
+        host = db_host,
+        port = db_port
+    )
+
+    s <- query_string
+    rs <- dbSendQuery(con, s)
+    df <-  fetch(rs, n = -1)
+    dbDisconnect(con)
+    return(df)
+}
+```
+
+```{r get_data}
+player_history <- query_db("
+    SELECT
+        p.first_name,
+        p.second_name,
+        t.name AS team_name,
+        p.element_type AS position,
+        ph.* 
+    FROM player_history ph
+    LEFT JOIN players p
+    ON
+        ph.element = p.id
+    LEFT JOIN teams t
+    ON
+        p.team = t.id
+") %>% as.data.table
+```
+
+```{r clean_data}
+# Construct full name
+player_history[, full_name := paste(first_name, second_name)]
+
+# Get net game score
+player_history[, team_net_score := (team_h_score - team_a_score)*ifelse(was_home==1,1,-1)]
+
+# Position as a factor
+player_history[, position := factor(position, levels=c(1,2,3,4), labels=c("GK", "DF", "MF", "FW"))]
+
+# Cumulative sums
+cumsum_cols = c("total_points", "minutes", "goals_scored", "assists", "clean_sheets", "goals_conceded", "yellow_cards", "red_cards", "bonus")
+cumsum_anscols = paste("cumulative", cumsum_cols, sep="_")
+player_history[order(fixture), (cumsum_anscols) := cumsum(.SD), by=element, .SDcols=cumsum_cols]
+
+# Lag columns
+lag_cols = c("total_points")
+lag_anscols = paste("lag", lag_cols, sep="_")
+player_history[order(fixture), (lag_anscols) := shift(.SD, 1, type="lag"), by=element, .SDcols=lag_cols]
+```
+
+# Development plotter
+
+```{r development_selectors}
+unique_players <- unique.data.frame(player_history[, c("full_name", "team_name", "element")])
+player_choices <- setNames(unique_players$element, paste(unique_players$full_name, "-", unique_players$team_name))
+
+selectInput(
+    "selected_players",
+    "Select players",
+    choices = player_choices,
+    selected = c(11, 191, 210),
+    multiple = TRUE
+)
+
+metric_cols <- c("total_points", "team_h_score", "team_a_score", "team_net_score", "minutes", "goals_scored", "assists", "clean_sheets", "goals_cnodeded",
+                 "own_goals", "penalties_saved", "penalties_missed", "yellow_cards", "red_cards", "saves", "bonus", "bps", "influence", "creativity", 
+                 "threat", "ict_index", "value", "transfers_balance", "selected", "transfers_in", "transfers_out")
+
+selectInput(
+    "selected_metric",
+    "Select metric",
+    choices = metric_cols,
+    selected = "total_points",
+    multiple = FALSE
+)
+```
+
+```{r points_plot}
+output$points_plot <- renderPlotly({
+    req(input$selected_players)
+    g <- ggplot(player_history[element %in% input$selected_players], aes_string(x="round", y=input$selected_metric, col="full_name")) +
+        geom_line() +
+        theme_bw() +
+        labs(x="Game week", y="Total points", col="Name")
+    ggplotly(g, dynamicTicks = TRUE)
+})
+
+plotlyOutput("points_plot")
+```
+
+# Scatter
+
+```{r scatter_selectors}
+sliderInput(
+    "minutes_slider",
+    label = "Minimum minutes played",
+    min = 0,
+    max = 90,
+    value = 45,
+    step = 1
+)
+```
+
+```{r scatter_plot}
+output$scatter_plot <- renderPlotly({
+    g <- ggplot(player_history[minutes >= input$minutes_slider],
+                aes(x=cumulative_minutes, y=cumulative_total_points, col=position, frame=round)) +
+        geom_point(aes(text=sprintf("Player name: %s", full_name))) +
+        theme_bw()
+
+    ggplotly(g) %>%
+    animation_opts(
+        1000, easing = "elastic", redraw = FALSE
+    )
+})
+
+plotlyOutput("scatter_plot")
+```
+
+
+
