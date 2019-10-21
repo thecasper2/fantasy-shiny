@@ -15,6 +15,7 @@ runtime: shiny # This means the markdown file can be run as a Shiny App, i.e. by
 # Import your librares as required
 library(data.table)
 library(ggplot2)
+library(glue)
 library(magrittr)
 library(plotly)
 library(RMySQL)
@@ -23,12 +24,16 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
 ```
 
 ```{r query_db_function}
+db_year <- 2019 # 2018 or 2019
+use_cache = TRUE # Whether to query MySQL or use rds file
+
 # MySQL Settings
 db_user <- "root"
-db_name <- "fantasy_football_2019"
+db_name <- ifelse(db_year==2018, "fantasy_football", "fantasy_football_2019")
+db_name <- "fantasy_football"
 db_host <- "127.0.0.1"
 db_port <- 3306
-query_db <- function(query_string){
+query_db <- function(query_string, db_name){
     con <- dbConnect(
         MySQL(),
         user = db_user,
@@ -46,21 +51,27 @@ query_db <- function(query_string){
 ```
 
 ```{r get_data}
-player_history <- query_db("
-    SELECT
-        p.first_name,
-        p.second_name,
-        t.name AS team_name,
-        p.element_type AS position,
-        ph.* 
-    FROM player_history ph
-    LEFT JOIN players p
-    ON
-        ph.element = p.id
-    LEFT JOIN teams t
-    ON
-        p.team = t.id
-") %>% as.data.table
+player_table_name <- ifelse(db_year==2018, "player_summary", "players")
+
+if(use_cache){
+    player_history <- readRDS("cache/player_history_{db_year}.rds" %>% glue)
+} else {
+    player_history <- "
+        SELECT
+            p.first_name,
+            p.second_name,
+            t.name AS team_name,
+            p.element_type AS position,
+            ph.*
+        FROM player_history ph
+        LEFT JOIN {player_table_name} p
+        ON
+            ph.element = p.id
+        LEFT JOIN teams t
+        ON
+            p.team = t.id
+    " %>% glue %>% query_db(db_name = db_name) %>% as.data.table
+}
 ```
 
 ```{r clean_data}
@@ -82,6 +93,14 @@ player_history[order(fixture), (cumsum_anscols) := cumsum(.SD), by=element, .SDc
 lag_cols = c("total_points")
 lag_anscols = paste("lag", lag_cols, sep="_")
 player_history[order(fixture), (lag_anscols) := shift(.SD, 1, type="lag"), by=element, .SDcols=lag_cols]
+
+# Points per minute (also cumulative)
+player_history[, points_per_minute := total_points/minutes]
+player_history[, cumulative_points_per_minute := cumulative_total_points/cumulative_minutes]
+
+# Economy (game points per value)
+player_history[, economy := total_points/value]
+player_history[, cumulative_economy := cumsum(total_points*minutes/value)/cumsum(minutes), by=element]
 ```
 
 # Development plotter
@@ -98,9 +117,12 @@ selectInput(
     multiple = TRUE
 )
 
-metric_cols <- c("total_points", "team_h_score", "team_a_score", "team_net_score", "minutes", "goals_scored", "assists", "clean_sheets", "goals_cnodeded",
-                 "own_goals", "penalties_saved", "penalties_missed", "yellow_cards", "red_cards", "saves", "bonus", "bps", "influence", "creativity", 
-                 "threat", "ict_index", "value", "transfers_balance", "selected", "transfers_in", "transfers_out")
+metric_cols <- c("total_points", "points_per_minute", "team_h_score", "team_a_score", "team_net_score", "minutes", "goals_scored", "assists",
+                 "clean_sheets", "goals_cnodeded", "own_goals", "penalties_saved", "penalties_missed", "yellow_cards", "red_cards", "saves", "bonus",
+                 "bps", "influence", "creativity", "threat", "ict_index", "value", "transfers_balance", "selected", "transfers_in", "transfers_out",
+                 "cumulative_total_points", "cumulative_minutes", "cumulative_goals_scored", "cumulative_assists", "cumulative_clean_sheets",
+                 "cumulative_goals_conceded", "cumulative_yellow_cards", "cumulative_red_cards", "cumulative_bonus", "cumulative_points_per_minute",
+                 "economy", "cumulative_economy")
 
 selectInput(
     "selected_metric",
@@ -117,7 +139,7 @@ output$points_plot <- renderPlotly({
     g <- ggplot(player_history[element %in% input$selected_players], aes_string(x="round", y=input$selected_metric, col="full_name")) +
         geom_line() +
         theme_bw() +
-        labs(x="Game week", y="Total points", col="Name")
+        labs(x="Game week", col="Name")
     ggplotly(g, dynamicTicks = TRUE)
 })
 
@@ -140,13 +162,13 @@ sliderInput(
 ```{r scatter_plot}
 output$scatter_plot <- renderPlotly({
     g <- ggplot(player_history[minutes >= input$minutes_slider],
-                aes(x=cumulative_minutes, y=cumulative_total_points, col=position, frame=round)) +
+                aes(x=value, y=cumulative_total_points, col=position, frame=round)) +
         geom_point(aes(text=sprintf("Player name: %s", full_name))) +
         theme_bw()
 
     ggplotly(g) %>%
     animation_opts(
-        1000, easing = "elastic", redraw = FALSE
+        1000, redraw = FALSE
     )
 })
 
