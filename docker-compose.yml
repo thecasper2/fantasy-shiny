@@ -1,0 +1,18 @@
+version: "2.0"
+
+services:
+  shiny:
+    container_name: fantasy-shiny
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    user: 'root'
+    ports:
+      - '3838:3838'
+    volumes:
+      - 'shiny_logs:/var/log/shiny-server'
+      - './apps:/srv/shiny-server/apps'
+
+volumes:
+  shiny_logs:
