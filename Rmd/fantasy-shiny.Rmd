@@ -25,12 +25,11 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
 
 ```{r query_db_function}
 db_year <- 2019 # 2018 or 2019
-use_cache = TRUE # Whether to query MySQL or use rds file
+use_cache = FALSE # Whether to query MySQL or use rds file
 
 # MySQL Settings
 db_user <- "root"
 db_name <- ifelse(db_year==2018, "fantasy_football", "fantasy_football_2019")
-db_name <- "fantasy_football"
 db_host <- "127.0.0.1"
 db_port <- 3306
 query_db <- function(query_string, db_name){
